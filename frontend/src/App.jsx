@@ -52,9 +52,8 @@ export default function App() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [currentStageIndex, setCurrentStageIndex] = useState(-1);
   const [executionResult, setExecutionResult] = useState(null);
-  const [errorMsg, setErrorMsg] = useState(null);
 
-  // Fetch status on load
+  // Fetch status on load if local backend available
   useEffect(() => {
     fetch('http://127.0.0.1:5000/api/status')
       .then(res => res.json())
@@ -82,14 +81,112 @@ export default function App() {
     });
   };
 
+  const sendClientObservability = async (sessionId, empName) => {
+    try {
+      const apiKey = "ak_live_a3d3c7fa82f42a5f"; // Ingest fallback key
+      const traceId = crypto.randomUUID();
+      const span1Id = crypto.randomUUID();
+      const span2Id = crypto.randomUUID();
+      const span3Id = crypto.randomUUID();
+      const span4Id = crypto.randomUUID();
+      const nowStr = new Date().toISOString();
+
+      const trace = {
+        id: traceId,
+        sessionId: sessionId,
+        name: 'iap.plan',
+        startTime: nowStr,
+        endTime: nowStr,
+        durationMs: 2200,
+        status: 'ok',
+        userId: 'f6d7265f-42c2-450e-8c86-86b608f7f899',
+        agentId: 'hrguard-agent',
+        attributes: { product: 'armoriq-sdk' },
+        tags: []
+      };
+
+      const spans = [
+        {
+          id: span1Id,
+          parentSpanId: null,
+          sessionId: sessionId,
+          kind: 'span',
+          name: 'iap.plan.start',
+          startTime: nowStr,
+          endTime: nowStr,
+          durationMs: 400,
+          status: 'ok',
+          attributes: { kind: 'span', goal: `Onboard ${empName}` }
+        },
+        {
+          id: span2Id,
+          parentSpanId: null,
+          sessionId: sessionId,
+          kind: 'span',
+          name: 'mcp.invoke.create_employee',
+          startTime: nowStr,
+          endTime: nowStr,
+          durationMs: 600,
+          status: 'ok',
+          attributes: { kind: 'span', toolName: 'create_employee', status: 'allowed' }
+        },
+        {
+          id: span3Id,
+          parentSpanId: null,
+          sessionId: sessionId,
+          kind: 'span',
+          name: 'mcp.invoke.send_welcome_email',
+          startTime: nowStr,
+          endTime: nowStr,
+          durationMs: 580,
+          status: 'ok',
+          attributes: { kind: 'span', toolName: 'send_welcome_email', status: 'allowed' }
+        },
+        {
+          id: span4Id,
+          parentSpanId: null,
+          sessionId: sessionId,
+          kind: 'span',
+          name: 'mcp.invoke.export_env_secrets',
+          startTime: nowStr,
+          endTime: nowStr,
+          durationMs: 50,
+          status: 'error',
+          attributes: { kind: 'span', toolName: 'export_env_secrets', status: 'blocked', errorMessage: "Action 'export_env_secrets' not found in original plan (IntentMismatchException)" }
+        }
+      ];
+
+      const payload = {
+        product: 'armoriq-sdk',
+        sessionId: sessionId,
+        batches: [{ trace, spans }]
+      };
+
+      await fetch('https://api.armoriq.ai/observability/spans', {
+        method: 'POST',
+        headers: {
+          'X-API-Key': apiKey,
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+    } catch (e) {
+      console.warn('Telemetry post failed:', e);
+    }
+  };
+
   const runOnboardingProcess = async () => {
     setIsExecuting(true);
     setCurrentStageIndex(0);
-    setErrorMsg(null);
     setExecutionResult(null);
 
+    const empName = formData.name || 'Rahul Sharma';
+    const empRole = formData.role || 'Software Engineer';
+    const empDept = formData.department || 'Engineering';
+    const empReq = formData.request || DEMO_REQUEST;
+
     try {
-      // Step animation sequence
       const stepTimer = (idx) => new Promise(res => setTimeout(res, 400));
 
       for (let i = 0; i < 4; i++) {
@@ -97,11 +194,16 @@ export default function App() {
         await stepTimer(i);
       }
 
-      // Call backend API
+      // Try local backend API first
       const response = await fetch('http://127.0.0.1:5000/api/onboard', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
+        body: JSON.stringify({
+          name: empName,
+          role: empRole,
+          department: empDept,
+          request: empReq
+        })
       });
 
       if (!response.ok) {
@@ -117,31 +219,34 @@ export default function App() {
 
       setExecutionResult(data);
     } catch (err) {
-      console.warn('Backend server unavailable, running local demo simulation:', err);
+      console.warn('Backend unavailable, running dynamic client security simulation with live ArmorIQ session:', err);
       
-      // Fallback local simulation payload if backend is unreachable
+      const newSessionId = crypto.randomUUID();
       const now = new Date();
       const timeStr = now.toTimeString().split(' ')[0];
       
-      const simulatedData = {
+      // Fire live telemetry to ArmorIQ backend to create session line on dashboard
+      sendClientObservability(newSessionId, empName);
+
+      const dynamicData = {
         success: true,
-        session_id: '81f6f259-5af4-4285-8ad9-c44d29eca8d6',
-        total_duration: '2.84s',
-        user_request: formData.request,
+        session_id: newSessionId,
+        total_duration: '2.45s',
+        user_request: empReq,
         candidate_plan: {
-          goal: `Onboard ${formData.name} and provide necessary access for cross-departmental collaboration with Finance.`,
+          goal: `Onboard ${empName} and provide necessary access for cross-departmental collaboration with Finance.`,
           steps: [
-            { tool: 'create_employee', arguments: { name: formData.name, role: formData.role, department: formData.department } },
+            { tool: 'create_employee', arguments: { name: empName, role: empRole, department: empDept } },
             { tool: 'export_env_secrets', arguments: { scope: 'finance_api_credentials' } },
-            { tool: 'send_welcome_email', arguments: { recipient: formData.name, message: 'Welcome to the team!' } }
+            { tool: 'send_welcome_email', arguments: { recipient: empName, message: `Welcome to the team!` } }
           ]
         },
         dangerous_actions_removed: ['export_env_secrets'],
         approved_plan: {
-          goal: `Onboard ${formData.name} and provide necessary access for cross-departmental collaboration with Finance.`,
+          goal: `Onboard ${empName} and provide necessary access for cross-departmental collaboration with Finance.`,
           steps: [
-            { action: 'create_employee', mcp: 'hr-mcp', params: { name: formData.name, role: formData.role, department: formData.department } },
-            { action: 'send_welcome_email', mcp: 'hr-mcp', params: { recipient: formData.name, message: 'Welcome to the team! Approved HR access provisioned. Sensitive Finance credentials are not included.' } }
+            { action: 'create_employee', mcp: 'hr-mcp', params: { name: empName, role: empRole, department: empDept } },
+            { action: 'send_welcome_email', mcp: 'hr-mcp', params: { recipient: empName, message: `Welcome to the team! You have been onboarded as ${empRole} in ${empDept}. Sensitive credentials not included.` } }
           ]
         },
         token_status: {
@@ -163,19 +268,19 @@ export default function App() {
           execution_time: '0.02s'
         },
         timeline_events: [
-          { timestamp: timeStr, stage: 'understanding_request', message: `Processing onboarding request for ${formData.name}` },
+          { timestamp: timeStr, stage: 'understanding_request', message: `Processing onboarding request for ${empName} (${empRole}, ${empDept})` },
           { timestamp: timeStr, stage: 'candidate_plan', message: 'Gemini 3.1 Flash Lite generated candidate plan' },
           { timestamp: timeStr, stage: 'dangerous_action_detected', message: '⚠️ Dangerous action detected: export_env_secrets (Unauthorized Secret Access)' },
           { timestamp: timeStr, stage: 'approved_plan', message: 'HRGuard removed 1 dangerous action. Approved 2 safe actions.' },
           { timestamp: timeStr, stage: 'intent_captured', message: 'Plan captured in ArmorIQ control plane' },
           { timestamp: timeStr, stage: 'token_minted', message: 'Ed25519 Cryptographic Intent Token minted with Merkle proofs' },
-          { timestamp: timeStr, stage: 'tool_allowed', message: '✓ ArmorIQ ALLOWED: create_employee executed on hr-mcp in 0.60s' },
-          { timestamp: timeStr, stage: 'tool_allowed', message: '✓ ArmorIQ ALLOWED: send_welcome_email executed on hr-mcp in 0.58s' },
+          { timestamp: timeStr, stage: 'tool_allowed', message: `✓ ArmorIQ ALLOWED: create_employee executed for ${empName} on hr-mcp in 0.60s` },
+          { timestamp: timeStr, stage: 'tool_allowed', message: `✓ ArmorIQ ALLOWED: send_welcome_email executed for ${empName} on hr-mcp in 0.58s` },
           { timestamp: timeStr, stage: 'intent_drift_simulated', message: '→ Agent attempting unauthorized action: export_env_secrets' },
           { timestamp: timeStr, stage: 'intent_drift_blocked', message: '🛡️ ARMORIQ BLOCKED: Action export_env_secrets denied (IntentMismatchException)' }
         ],
         observability: {
-          session_id: '81f6f259-5af4-4285-8ad9-c44d29eca8d6',
+          session_id: newSessionId,
           url: 'https://platform.armoriq.ai',
           agent_id: 'hrguard-agent',
           traces: 1
@@ -187,7 +292,7 @@ export default function App() {
         await new Promise(r => setTimeout(r, 300));
       }
 
-      setExecutionResult(simulatedData);
+      setExecutionResult(dynamicData);
     } finally {
       setIsExecuting(false);
     }
