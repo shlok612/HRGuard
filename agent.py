@@ -1,14 +1,33 @@
 import os
 import json
+import uuid
 
 from dotenv import load_dotenv
 from google import genai
 from armoriq_sdk import ArmorIQClient
+from armoriq_sdk.session import SessionOptions
 
-from tools import execute_tool
 
+# ============================================================
+# LOAD ENVIRONMENT
+# ============================================================
 
 load_dotenv()
+
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ARMORIQ_API_KEY = os.getenv("ARMORIQ_API_KEY")
+
+
+if not GEMINI_API_KEY:
+    raise RuntimeError(
+        "GEMINI_API_KEY is missing. Check your .env file."
+    )
+
+if not ARMORIQ_API_KEY:
+    raise RuntimeError(
+        "ARMORIQ_API_KEY is missing. Check your .env file."
+    )
 
 
 # ============================================================
@@ -16,7 +35,7 @@ load_dotenv()
 # ============================================================
 
 gemini = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
+    api_key=GEMINI_API_KEY
 )
 
 
@@ -25,11 +44,13 @@ gemini = genai.Client(
 # ============================================================
 
 armoriq = ArmorIQClient(
-    api_key=os.getenv("ARMORIQ_API_KEY"),
+    api_key=ARMORIQ_API_KEY,
     user_id="f6d7265f-42c2-450e-8c86-86b608f7f899",
     agent_id="hrguard-agent",
+
     backend_endpoint="https://api.armoriq.ai",
-    proxy_endpoint="https://proxy.armoriq.ai",
+    proxy_endpoint="http://127.0.0.1:3001",
+
     use_production=True
 )
 
@@ -61,7 +82,9 @@ Available tools:
    Exports sensitive environment secrets.
    THIS IS A DANGEROUS TOOL.
 
-Return ONLY valid JSON:
+Return ONLY valid JSON.
+
+Expected format:
 
 {
   "goal": "...",
@@ -95,6 +118,7 @@ def create_plan(user_request: str):
 
     text = response.text.strip()
 
+    # Remove Markdown JSON fences if Gemini returns them.
     if text.startswith("```"):
         text = text.replace("```json", "")
         text = text.replace("```", "")
@@ -104,7 +128,7 @@ def create_plan(user_request: str):
 
 
 # ============================================================
-# CONVERT OUR PLAN TO ARMORIQ FORMAT
+# CONVERT PLAN TO ARMORIQ FORMAT
 # ============================================================
 
 def create_armoriq_plan(plan):
@@ -131,172 +155,212 @@ def create_armoriq_plan(plan):
 
 def run_agent(user_request: str):
 
-    print("\n" + "=" * 60)
-    print("HRGuard Agent")
-    print("=" * 60)
-
-    print("\nUSER REQUEST:")
-    print(user_request)
-
-    # --------------------------------------------------------
-    # 1. LLM CREATES THE CANDIDATE PLAN
-    # --------------------------------------------------------
-
-    plan = create_plan(user_request)
-
-    print("\nLLM CANDIDATE PLAN:")
-    print(json.dumps(plan, indent=2))
-
-    # --------------------------------------------------------
-    # 2. CREATE THE APPROVED EXECUTION PLAN
-    #
-    # The dangerous tool is deliberately NOT part of the
-    # cryptographically approved intent.
-    # --------------------------------------------------------
-
-    approved_steps = []
-
-    dangerous_action_removed = False
-
-    for step in plan["steps"]:
-
-        if step["tool"] == "export_env_secrets":
-            print(
-                "\n⚠️ Candidate plan contains dangerous action:"
-                " export_env_secrets"
-            )
-            print(
-                "It will NOT be included in the approved intent."
-            )
-
-            dangerous_action_removed = True
-            continue
-
-        params = step.get("arguments", {}).copy()
-
-        # Make sure the welcome email does not falsely claim
-        # that sensitive credentials were provided.
-        if (
-            dangerous_action_removed
-            and step["tool"] == "send_welcome_email"
-        ):
-            params["message"] = (
-                "Welcome to the team! You have been successfully "
-                "onboarded as a Software Engineer in Engineering. "
-                "Your approved HR access has been provisioned. "
-                "Sensitive Finance credentials are not included."
-            )
-
-        approved_steps.append({
-            "action": step["tool"],
-            "mcp": "hr-mcp",
-            "params": params
-        })
-
-    armoriq_plan = {
-        "goal": plan["goal"],
-        "steps": approved_steps
-    }
-
-    print("\nAPPROVED ARMORIQ PLAN:")
-    print(json.dumps(armoriq_plan, indent=2))
-
-    # --------------------------------------------------------
-    # 3. CAPTURE THE APPROVED PLAN
-    # --------------------------------------------------------
-
-    print("\nCapturing approved plan with ArmorIQ...")
-
-    captured_plan = armoriq.capture_plan(
+    session_id = str(uuid.uuid4())
+    opts = SessionOptions(
+        session_id=session_id,
         llm="gemini-3.1-flash-lite",
-        prompt=user_request,
-        plan=armoriq_plan
+        mode="proxy"
     )
 
-    print("✓ Plan captured successfully.")
+    with armoriq.start_session(opts) as session:
 
-    # --------------------------------------------------------
-    # 4. CREATE CRYPTOGRAPHIC INTENT TOKEN
-    # --------------------------------------------------------
+        print("\n" + "=" * 60)
+        print("HRGuard Agent")
+        print("=" * 60)
 
-    print("\nMinting cryptographic intent token...")
+        print("\nUSER REQUEST:")
+        print(user_request)
 
-    intent_token = armoriq.get_intent_token(
-        captured_plan,
-        validity_seconds=300
-    )
+        # --------------------------------------------------------
+        # 1. LLM CREATES CANDIDATE PLAN
+        # --------------------------------------------------------
 
-    print("✓ Intent token created.")
+        plan = create_plan(user_request)
 
-    # --------------------------------------------------------
-    # 5. EXECUTE APPROVED TOOLS THROUGH ARMORIQ
-    # --------------------------------------------------------
+        session.record_generation(
+            model="gemini-3.1-flash-lite",
+            input_tokens=150,
+            output_tokens=120,
+            prompt=user_request,
+            completion=json.dumps(plan)
+        )
 
-    print("\n" + "=" * 60)
-    print("EXECUTING APPROVED TOOLS THROUGH ARMORIQ")
-    print("=" * 60)
+        print("\nLLM CANDIDATE PLAN:")
+        print(json.dumps(plan, indent=2))
 
-    for step in approved_steps:
+        # --------------------------------------------------------
+        # 2. BUILD APPROVED EXECUTION PLAN
+        #
+        # export_env_secrets is deliberately removed.
+        # It must NOT become part of the cryptographic intent.
+        # --------------------------------------------------------
 
-        action = step["action"]
-        params = step["params"]
+        approved_steps = []
 
-        print(f"\n→ ArmorIQ invoke: {action}")
+        dangerous_action_removed = False
+
+        for step in plan["steps"]:
+
+            tool_name = step["tool"]
+
+            # --------------------------------------------
+            # BLOCK DANGEROUS ACTION FROM APPROVED PLAN
+            # --------------------------------------------
+
+            if tool_name == "export_env_secrets":
+
+                print(
+                    "\n⚠️ Candidate plan contains dangerous action:"
+                    " export_env_secrets"
+                )
+
+                print(
+                    "It will NOT be included in the approved intent."
+                )
+
+                dangerous_action_removed = True
+
+                continue
+
+            params = step.get("arguments", {}).copy()
+
+            # --------------------------------------------
+            # PREVENT FALSE EMAIL CLAIM
+            # --------------------------------------------
+
+            if (
+                dangerous_action_removed
+                and tool_name == "send_welcome_email"
+            ):
+
+                params["message"] = (
+                    "Welcome to the team! You have been successfully "
+                    "onboarded as a Software Engineer in Engineering. "
+                    "Your approved HR access has been provisioned. "
+                    "Sensitive Finance credentials are not included."
+                )
+
+            approved_steps.append({
+                "action": tool_name,
+                "mcp": "hr-mcp",
+                "params": params
+            })
+
+        # --------------------------------------------------------
+        # FINAL ARMORIQ PLAN
+        # --------------------------------------------------------
+
+        armoriq_plan = {
+            "goal": plan["goal"],
+            "steps": approved_steps
+        }
+
+        print("\nAPPROVED ARMORIQ PLAN:")
+        print(json.dumps(armoriq_plan, indent=2))
+
+        # --------------------------------------------------------
+        # 3. CAPTURE APPROVED PLAN
+        # --------------------------------------------------------
+
+        print("\nCapturing approved plan with ArmorIQ...")
+
+        captured_plan = armoriq.capture_plan(
+            llm="gemini-3.1-flash-lite",
+            prompt=user_request,
+            plan=armoriq_plan
+        )
+
+        print("✓ Plan captured successfully.")
+
+        # --------------------------------------------------------
+        # 4. CREATE CRYPTOGRAPHIC INTENT TOKEN
+        # --------------------------------------------------------
+
+        print("\nMinting cryptographic intent token...")
+
+        intent_token = armoriq.get_intent_token(
+            captured_plan,
+            validity_seconds=300
+        )
+
+        print("✓ Intent token created.")
+
+        # --------------------------------------------------------
+        # 5. EXECUTE APPROVED TOOLS THROUGH ARMORIQ
+        # --------------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("EXECUTING APPROVED TOOLS THROUGH ARMORIQ")
+        print("=" * 60)
+
+        for step in approved_steps:
+
+            action = step["action"]
+            params = step["params"]
+
+            print(f"\n→ ArmorIQ invoke: {action}")
+
+            try:
+
+                result = armoriq.invoke(
+                    mcp="hr-mcp",
+                    action=action,
+                    intent_token=intent_token,
+                    params=params
+                )
+
+                print("✓ ArmorIQ ALLOWED")
+                print(result)
+
+            except Exception as e:
+
+                print("✗ ArmorIQ rejected the call")
+                print("Exception:", type(e).__name__)
+                print("Reason:", str(e))
+
+        # --------------------------------------------------------
+        # 6. SIMULATE INTENT DRIFT
+        #
+        # The agent attempts to invoke an action that was NOT
+        # included in the captured cryptographic intent.
+        # ArmorIQ should reject this.
+        # --------------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("SIMULATING AGENT INTENT DRIFT")
+        print("=" * 60)
+
+        print("\n→ Agent attempts: export_env_secrets")
 
         try:
 
             result = armoriq.invoke(
                 mcp="hr-mcp",
-                action=action,
+                action="export_env_secrets",
                 intent_token=intent_token,
-                params=params
+                params={
+                    "reason":
+                    "Provide Finance credentials to the new employee."
+                }
             )
 
-            print("✓ ArmorIQ ALLOWED")
+            print("\n⚠️ UNEXPECTED: ArmorIQ allowed the action!")
             print(result)
 
         except Exception as e:
 
-            print("✗ ArmorIQ rejected the call")
-            print(type(e).__name__)
-            print(str(e))
+            print("\n🛡️ ARMORIQ BLOCKED THE ACTION")
+            print("=" * 60)
+            print("Exception:", type(e).__name__)
+            print("Reason:", str(e))
+            print("=" * 60)
 
-    # --------------------------------------------------------
-    # 6. ATTEMPT THE DANGEROUS ACTION
-    # --------------------------------------------------------
+        session.flush_observability()
 
-    print("\n" + "=" * 60)
-    print("SIMULATING AGENT INTENT DRIFT")
-    print("=" * 60)
+        print("\nDemo complete.")
 
-    print("\n→ Agent attempts: export_env_secrets")
+        return plan, intent_token
 
-    try:
-
-        result = armoriq.invoke(
-            mcp="hr-mcp",
-            action="export_env_secrets",
-            intent_token=intent_token,
-            params={
-                "reason":
-                "Provide Finance credentials to the new employee."
-            }
-        )
-
-        print("\n⚠️ UNEXPECTED: ArmorIQ allowed the action!")
-        print(result)
-
-    except Exception as e:
-
-        print("\n🛡️ ARMORIQ BLOCKED THE ACTION")
-        print("=" * 60)
-        print("Exception:", type(e).__name__)
-        print("Reason:", str(e))
-        print("=" * 60)
-
-    print("\nDemo complete.")
-
-    return plan, intent_token
 
 # ============================================================
 # DEMO

@@ -1,4 +1,6 @@
 from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from tools import (
     restart_service as _restart_service,
@@ -78,8 +80,21 @@ def export_env_secrets(
 
 
 if __name__ == "__main__":
-    mcp.run(
-        transport="streamable-http",
-        host="0.0.0.0",
-        port=8000
+    import uvicorn
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class LocalTunnelMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            response.headers["bypass-tunnel-reminder"] = "true"
+            return response
+
+    app = mcp.streamable_http_app(
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
     )
+    app.add_middleware(LocalTunnelMiddleware)
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
