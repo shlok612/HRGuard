@@ -4,6 +4,14 @@
 
 ---
 
+## 🌐 Live Submission & Deployment Links
+
+* 🌐 **Live Dashboard URL**: [https://shlok612.github.io/HRGuard/](https://shlok612.github.io/HRGuard/)
+* 📦 **GitHub Repository**: [https://github.com/shlok612/HRGuard](https://github.com/shlok612/HRGuard)
+* 📊 **ArmorIQ Observability Dashboard**: [https://platform.armoriq.ai](https://platform.armoriq.ai)
+
+---
+
 ## 📌 1. What HRGuard Is & Project Purpose
 
 The promise of autonomous AI agents is that they handle complex workflows end-to-end without constant human babysitting. However, "autonomous" today often means either asking for permission on every micro-step (destroying utility) or running completely unchecked (risking data leakage and unauthorized escalation).
